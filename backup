@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+
+info() { printf "[%s] (%s) %s\n" "$(date)" "${BORG_REPO_PREFIX}" "$*" >&2; }
+
+has_valid_permissions() {
+  config_file=$1
+
+  if [[ "${OSTYPE}" =~ 'darwin'* ]]; then
+    if [ $( stat -f"%p" "${config_file}" | cut -b 4-6 ) -ne 600 ]; then
+      echo 0
+      return
+    fi
+  else
+    if [[ $( stat -c"%a" "${config_file}" ) -ne 600 ]]; then
+      echo 0
+      return
+    fi
+  fi
+
+  echo 1
+}
+
+trap 'echo $(date) Backup interrupted >&2; exit 2' INT TERM
+
+SOURCE_PATH=$1  # Must be a readable directory
+if [[ ! -d "${SOURCE_PATH}" || ! -r "${SOURCE_PATH}" ]]; then
+  info "ABORT: Invalid Source Path"
+  exit 1;
+fi
+
+# Loads the global configuration file. This is users can store
+# global borg configuration data that can be overridden in the
+# local configuration file located in the source directory.
+GLOBAL_CONFIG_FILE="${HOME}/.backuprc"
+if [[ -f "${GLOBAL_CONFIG_FILE}" && -r "${GLOBAL_CONFIG_FILE}" ]]; then
+  if [[ $(has_valid_permissions "${GLOBAL_CONFIG_FILE}") -eq 0 ]]; then
+    info "ABORT: file has unsafe permissions: ${GLOBAL_CONFIG_FILE}"
+  fi
+
+  source "${HOME}/.backuprc"
+fi
+
+# Loads the local config file that is placed into the source
+# directory. This file can override any value(s) in the global
+# config file.
+LOCAL_CONFIG_FILE="${SOURCE_PATH}/.backuprc"
+if [[ ! -f "${LOCAL_CONFIG_FILE}" || ! -r "${LOCAL_CONFIG_FILE}" ]]; then
+  info "ABORT: missing backup config file: {$LOCAL_CONFIG_FILE}"
+  exit 1
+
+elif [[ $(has_valid_permissions "${LOCAL_CONFIG_FILE}") -eq 0 ]]; then
+  info "ABORT: file has unsafe permissions: ${LOCAL_CONFIG_FILE}"
+  exit 1
+fi
+
+# Source config
+source "${LOCAL_CONFIG_FILE}"
+
+# Validate backup config data
+if [[ -z "${BORG_BIN+x}" || -z "${BORG_REPO+x}" || -z "${BORG_PASSPHRASE+x}" || -z "${BORG_REPO_PREFIX+x}" ]]; then
+  info "ABORT: backup configuration is not complete."
+  into "ABORT: variables BORG_BIN, BORG_REPO, BORG_PASSPHRASE, and BORG_REP_PREFIX must be defined."
+  exit 1
+fi
+
+info "Starting Backup"
+"${BORG_BIN}" create "::${BORG_REPO_PREFIX}.{now:%Y-%m-%dT%H:%M:%S}" "${SOURCE_PATH}"
+
+backup_exit=$?
+
+info "Pruning Backup Repository"
+${BORG_BIN} prune \
+  --prefix="${BORG_REPO_PREFIX}." \
+  --keep-hourly=8 \
+  --keep-daily=7 \
+  --keep-weekly=4 \
+  --keep-monthly=6
+
+prune_exit=$?
+
+info "Compacting Backup Repository"
+"${BORG_BIN}" compact
+
+# Use highest exit code as global exit code
+global_exit=$(( backup_exit > prune_exit ? backup_exit : prune_exit ))
+global_exit=$(( compact_exit > global_exit ? compact_exit : global_exit ))
+
+if [ ${global_exit} -eq 0 ]; then
+    info "Backup and Prune finished successfully"
+elif [ ${global_exit} -eq 1 ]; then
+    info "Backup and/or Prune finished with warnings"
+else
+    info "Backup and/or Prune finished with errors"
+fi
+
+exit ${global_exit}
