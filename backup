@@ -20,6 +20,8 @@ has_valid_permissions() {
   echo 1
 }
 
+version_lt() { test "$(echo "$@" | tr " " "\n" | sort -rV | head -n 1)" != "$1"; }
+
 trap 'echo $(date) Backup interrupted >&2; exit 2' INT TERM
 
 SOURCE_PATH=$1  # Must be a readable directory
@@ -63,6 +65,12 @@ if [[ -z "${BORG_BIN+x}" || -z "${BORG_REPO+x}" || -z "${BORG_PASSPHRASE+x}" || 
   exit 1
 fi
 
+BORG_VERSION=$( "${BORG_BIN}" --version | cut -d ' ' -f 2 )
+BYPASS_BORG_COMPRESS=0
+if version_lt "${BORG_VERSION}" "1.1.18";then
+  BYPASS_BORG_COMPRESS=1
+fi
+
 info "Starting Backup"
 "${BORG_BIN}" create "::${BORG_REPO_PREFIX}.{now:%Y-%m-%dT%H:%M:%S}" "${SOURCE_PATH}"
 
@@ -78,8 +86,10 @@ ${BORG_BIN} prune \
 
 prune_exit=$?
 
-info "Compacting Backup Repository"
-"${BORG_BIN}" compact
+if [[ "${BYPASS_BORG_COMPRESS}" -eq 0 ]]; then
+  info "Compacting Backup Repository"
+  "${BORG_BIN}" compact
+fi
 
 # Use highest exit code as global exit code
 global_exit=$(( backup_exit > prune_exit ? backup_exit : prune_exit ))
