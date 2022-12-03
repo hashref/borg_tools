@@ -78,7 +78,7 @@ backup_exit=$?
 
 info "Pruning Backup Repository"
 ${BORG_BIN} prune \
-  --prefix="${BORG_REPO_PREFIX}." \
+  --glob-archives="${BORG_REPO_PREFIX}." \
   --keep-hourly=8 \
   --keep-daily=7 \
   --keep-weekly=4 \
